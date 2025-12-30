@@ -78,10 +78,10 @@ def format_hex_view(data, bytes_per_row=16):
     return "\n".join(lines)
 
 
-def center_toplevel(window):
+def center_toplevel(window, width=None, height=None):
     window.update_idletasks()
-    width = window.winfo_reqwidth()
-    height = window.winfo_reqheight()
+    width = window.winfo_reqwidth() if width is None else width
+    height = window.winfo_reqheight() if height is None else height
     screen_w = window.winfo_screenwidth()
     screen_h = window.winfo_screenheight()
     x = max(0, (screen_w - width) // 2)
@@ -839,7 +839,8 @@ class App:
         about = tk.Toplevel(self.root)
         about.title("About")
         about.resizable(False, False)
-        about.geometry("250x200")
+        about_width = 250
+        about_height = 150
 
         frame = ttk.Frame(about, padding=16)
         frame.place(relx=0.5, rely=0.5, anchor="center")
@@ -861,7 +862,7 @@ class App:
         ttk.Label(frame, text="Pierpa86").grid(row=1, column=text_col, sticky="w")
         ttk.Label(frame, text="Version 1.0").grid(row=2, column=text_col, sticky="w")
         ttk.Label(frame, text="30/12/2025").grid(row=3, column=text_col, sticky="w")
-        center_toplevel(about)
+        center_toplevel(about, width=about_width, height=about_height)
 
 
 def main():
