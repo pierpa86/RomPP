@@ -7,9 +7,75 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import zlib
 
+from neoconv import __version__ as NEOCONV_VERSION
+from neoconv.gui import (
+    ExtractTab as NeoConvExtractTab,
+    InfoTab as NeoConvInfoTab,
+    PackTab as NeoConvPackTab,
+    VerifyTab as NeoConvVerifyTab,
+)
+
+try:
+    from tkinterdnd2 import COPY as DND_COPY, DND_FILES, TkinterDnD
+except Exception:
+    DND_COPY = "copy"
+    DND_FILES = None
+    TkinterDnD = None
+
 APP_TITLE = "Rom PP - Rom Wizard"
 
 DEFAULT_SLOTS = 4
+
+TOOLS_HELP_TEXT = """Rom PP Tools Help
+
+Where to find tools
+
+The Tools menu in the top bar contains Split, Split Interleaved, Merge, Merge Interleaved, Padding, Double, Split C ROM, Split V ROM, NeoTool, and .neoConv.
+
+The graphical ROM view right-click menu contains slot-specific actions: Unload, Padding, Double, Split, Split Interleaved, Split C ROM, Split V ROM, and Hex Viewer.
+
+You can also drag and drop a file from Windows Explorer onto a graphical ROM view to load that file into the corresponding slot.
+
+Tool descriptions
+
+Split
+Splits the selected ROM slot into a chosen number of equal-sized parts. The source file size must be exactly divisible by the number of parts.
+
+Split Interleaved
+Splits the selected ROM slot into two files by separating alternating bytes. This is useful for ROM data stored as high/low byte interleaved pairs.
+
+Merge
+Combines the loaded ROM data from multiple selected slots into one output file, in the order entered by the user.
+
+Merge Interleaved (slots 1 & 2)
+Builds one interleaved file from ROM slot 1 and ROM slot 2. Slot 1 provides the first byte of each pair, and slot 2 provides the second byte. Both files must have the same size.
+
+Padding
+Expands the selected ROM file to a target size by adding padding bytes. Use this when a ROM image must match a specific chip or board size.
+
+Double
+Expands the selected ROM by repeating its data a chosen number of times. This is useful when a smaller ROM must be mirrored into a larger address space.
+
+Split C / Split C ROM
+Splits Neo Geo C graphics ROM data into chip-sized parts. Available target sizes are 1 MB, 2 MB, 4 MB, and 8 MB.
+
+Split V / Split V ROM
+Splits Neo Geo V sound ROM data into chip-sized parts. Available target sizes are 1 MB, 2 MB, and 4 MB.
+
+NeoTool
+Analyzes a folder of Neo Geo ROM component files, detects C, V, P, S, and M files, and prepares output files using the selected target sizes.
+
+.neoConv
+Opens the integrated neoConv utility. It can extract TerraOnion .neo containers to MAME or Darksoft ROM sets, pack ROM sets into .neo files, verify roundtrip conversions, and inspect .neo metadata.
+Credit: .neoConv is based on neoconv by d4NY0H.
+Source project: https://github.com/d4NY0H/neoconv
+
+Unload
+Removes the file from the selected ROM slot and clears its filename, size, CRC32, SHA1, and graphical memory view.
+
+Hex Viewer
+Opens a read-only hexadecimal view of the loaded file in the selected ROM slot.
+"""
 
 GRID_COLS = 64
 GRID_ROWS = 32
@@ -923,7 +989,7 @@ class NeoToolDialog(tk.Toplevel):
 
         viewer = tk.Toplevel(self)
         viewer.title("NeoTool Prepare Summary")
-        viewer.minsize(720, 420)
+        viewer.minsize(980, 320)
 
         frame = ttk.Frame(viewer, padding=6)
         frame.grid(row=0, column=0, sticky="nsew")
@@ -933,20 +999,24 @@ class NeoToolDialog(tk.Toplevel):
         text = tk.Text(
             frame,
             wrap="word",
+            width=132,
+            height=18,
             font=("Consolas", 10),
             background="#ffffff",
         )
         y_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-        text.configure(yscrollcommand=y_scroll.set)
+        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
 
         text.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
         text.insert("1.0", summary_text)
         text.configure(state="disabled")
-        center_toplevel(viewer)
+        center_toplevel(viewer, width=1100, height=360)
 
     def _auto_assign(self):
         self.candidates = find_neo_component_candidates(self.folder_path)
@@ -1193,6 +1263,7 @@ class MemoryView(ttk.Frame):
         on_split_c_rom,
         on_split_v_rom,
         on_open_hex,
+        on_drop_file=None,
     ):
         super().__init__(parent)
 
@@ -1220,7 +1291,9 @@ class MemoryView(ttk.Frame):
         self.on_split_c_rom = on_split_c_rom
         self.on_split_v_rom = on_split_v_rom
         self.on_open_hex = on_open_hex
+        self.on_drop_file = on_drop_file
         self.has_data = False
+        self.file_drop_handler = None
         self.label_text_id = None
         self.label_bounds = None
         self.label_center_y = None
@@ -1255,6 +1328,39 @@ class MemoryView(ttk.Frame):
         self.menu.add_command(label="Hex Viewer...", command=self._handle_open_hex)
         self._draw_chip()
         self.set_data(None, None, None)
+        self.after_idle(self._enable_file_drop)
+
+    def _enable_file_drop(self):
+        if self.file_drop_handler is not None or self.on_drop_file is None:
+            return
+        if DND_FILES is None or not hasattr(self.canvas, "drop_target_register"):
+            return
+        try:
+            self.canvas.drop_target_register(DND_FILES)
+            self.canvas.dnd_bind("<<DropEnter>>", self._accept_file_drop)
+            self.canvas.dnd_bind("<<DropPosition>>", self._accept_file_drop)
+            self.canvas.dnd_bind("<<Drop>>", self._handle_file_drop)
+        except (RuntimeError, tk.TclError):
+            return
+        self.file_drop_handler = True
+
+    def _accept_file_drop(self, event):
+        return DND_COPY
+
+    def _handle_file_drop(self, event):
+        paths = self._parse_drop_files(event.data)
+        if paths:
+            self.on_drop_file(paths[0])
+        return DND_COPY
+
+    def _parse_drop_files(self, data):
+        if not data:
+            return []
+        try:
+            paths = self.canvas.tk.splitlist(data)
+        except tk.TclError:
+            paths = (data,)
+        return [path for path in paths if path]
 
     def _show_menu(self, event):
         state = tk.NORMAL if self.has_data else tk.DISABLED
@@ -1521,6 +1627,7 @@ class SlotPanel:
         self.size_var = tk.StringVar()
         self.crc_var = tk.StringVar()
         self.sha1_var = tk.StringVar()
+        self.copy_popup = None
 
         ttk.Label(self.info_frame, text="Filename:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
         filename_entry = tk.Entry(
@@ -1562,6 +1669,10 @@ class SlotPanel:
             readonlybackground="#ffffff",
         )
         crc_entry.configure(state="readonly")
+        crc_entry.bind(
+            "<Double-Button-1>",
+            lambda event: self.copy_checksum_to_clipboard(event, self.crc_var),
+        )
         crc_entry.grid(
             row=1, column=4, sticky="w", padx=4, pady=2
         )
@@ -1575,6 +1686,10 @@ class SlotPanel:
             readonlybackground="#ffffff",
         )
         sha1_entry.configure(state="readonly")
+        sha1_entry.bind(
+            "<Double-Button-1>",
+            lambda event: self.copy_checksum_to_clipboard(event, self.sha1_var),
+        )
         sha1_entry.grid(
             row=2, column=1, columnspan=4, sticky="ew", padx=4, pady=2
         )
@@ -1594,22 +1709,85 @@ class SlotPanel:
             on_split_c_rom=self.split_c_rom,
             on_split_v_rom=self.split_v_rom,
             on_open_hex=self.open_hex_viewer,
+            on_drop_file=self.load_file_path,
         )
         self.mem_view.grid(row=0, column=0, sticky="nsew")
+
+    def copy_checksum_to_clipboard(self, event, value_var):
+        value = value_var.get().strip()
+        if not value:
+            return "break"
+
+        widget = event.widget if event else self.info_frame
+        try:
+            widget.clipboard_clear()
+            widget.clipboard_append(value)
+            widget.update()
+            self.show_copy_popup(widget, "Copiato")
+        except tk.TclError as exc:
+            messagebox.showerror("Copy error", f"Failed to copy value:\n{exc}", parent=self.info_frame)
+        return "break"
+
+    def show_copy_popup(self, widget, text):
+        if self.copy_popup is not None and self.copy_popup.winfo_exists():
+            self.copy_popup.destroy()
+
+        popup = tk.Toplevel(widget)
+        self.copy_popup = popup
+        popup.withdraw()
+        popup.overrideredirect(True)
+        try:
+            popup.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        label = tk.Label(
+            popup,
+            text=text,
+            background="#1f1f1f",
+            foreground="#ffffff",
+            borderwidth=1,
+            relief="solid",
+            padx=10,
+            pady=4,
+        )
+        label.pack()
+        popup.update_idletasks()
+
+        x = widget.winfo_rootx() + max(0, (widget.winfo_width() - popup.winfo_width()) // 2)
+        y = widget.winfo_rooty() - popup.winfo_height() - 6
+        if y < 0:
+            y = widget.winfo_rooty() + widget.winfo_height() + 6
+        popup.geometry(f"+{x}+{y}")
+        popup.deiconify()
+
+        def close_popup():
+            if self.copy_popup is popup:
+                self.copy_popup = None
+            if popup.winfo_exists():
+                popup.destroy()
+
+        popup.after(1100, close_popup)
 
     def load_file(self):
         path = filedialog.askopenfilename(
             title=f"Select ROM #{self.index}",
             filetypes=[("Binary files", "*.*")],
+            parent=self.info_frame,
         )
         if not path:
             return
+        self.load_file_path(path)
 
+    def load_file_path(self, path):
+        if not os.path.isfile(path):
+            messagebox.showerror("Load error", f"Not a file:\n{path}", parent=self.info_frame)
+            return
         try:
             with open(path, "rb") as handle:
                 data = handle.read()
         except OSError as exc:
-            messagebox.showerror("Load error", f"Failed to read file:\n{exc}")
+            messagebox.showerror("Load error", f"Failed to read file:\n{exc}", parent=self.info_frame)
             return
 
         self.data = data
@@ -2016,6 +2194,28 @@ class SlotPanel:
         center_toplevel(viewer)
 
 
+class NeoConvDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title(f"neoConv {NEOCONV_VERSION}")
+        self.resizable(False, False)
+        self.transient(parent)
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        tabs = (
+            (NeoConvExtractTab(notebook), "Extract (.neo -> files)"),
+            (NeoConvPackTab(notebook), "Pack (files -> .neo)"),
+            (NeoConvVerifyTab(notebook), "Verify"),
+            (NeoConvInfoTab(notebook), "Info"),
+        )
+        for tab, label in tabs:
+            notebook.add(tab, text=label)
+
+        center_toplevel(self)
+        self.focus_set()
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -2029,6 +2229,7 @@ class App:
         self.split_interleaved_menu = None
         self.split_c_rom_menu = None
         self.split_v_rom_menu = None
+        self.neoconv_window = None
 
         self.root.title(APP_TITLE)
         self.root.minsize(650, 500)
@@ -2108,9 +2309,11 @@ class App:
         tools_menu.add_cascade(label="Split V ROM", menu=self.split_v_rom_menu)
         tools_menu.add_separator()
         tools_menu.add_command(label="NeoTool...", command=self.open_neo_tool)
+        tools_menu.add_command(label=".neoConv", command=self.open_neoconv)
         menubar.add_cascade(label="Tools", menu=tools_menu)
 
         info_menu = tk.Menu(menubar, tearoff=0)
+        info_menu.add_command(label="Help", command=self.show_help)
         info_menu.add_command(label="About", command=self.show_about)
         menubar.add_cascade(label="Info", menu=info_menu)
         self.root.config(menu=menubar)
@@ -2267,6 +2470,19 @@ class App:
             return
         NeoToolDialog(self.root, folder_path)
 
+    def open_neoconv(self):
+        if self.neoconv_window is not None and self.neoconv_window.winfo_exists():
+            self.neoconv_window.lift()
+            self.neoconv_window.focus_set()
+            return
+        self.neoconv_window = NeoConvDialog(self.root)
+        self.neoconv_window.protocol("WM_DELETE_WINDOW", self.close_neoconv)
+
+    def close_neoconv(self):
+        if self.neoconv_window is not None and self.neoconv_window.winfo_exists():
+            self.neoconv_window.destroy()
+        self.neoconv_window = None
+
     def merge_interleaved(self):
         if len(self.panels) < 2:
             messagebox.showwarning("Merge interleaved", "Need at least 2 slots.")
@@ -2310,6 +2526,41 @@ class App:
 
         messagebox.showinfo("Merge interleaved", f"Interleaved file saved:\n{path}")
 
+    def show_help(self):
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Help")
+        help_window.minsize(560, 420)
+        help_window.transient(self.root)
+
+        frame = ttk.Frame(help_window, padding=8)
+        frame.grid(row=0, column=0, sticky="nsew")
+        help_window.rowconfigure(0, weight=1)
+        help_window.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        text = tk.Text(
+            frame,
+            wrap="word",
+            width=84,
+            height=28,
+            background="#ffffff",
+            font=("Segoe UI", 10),
+            padx=8,
+            pady=8,
+        )
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        text.insert("1.0", TOOLS_HELP_TEXT)
+        text.configure(state="disabled")
+
+        close_button = ttk.Button(help_window, text="Close", command=help_window.destroy)
+        close_button.grid(row=1, column=0, pady=(0, 8))
+        center_toplevel(help_window, width=760, height=560)
+        close_button.focus_set()
+
     def show_about(self):
         about = tk.Toplevel(self.root)
         about.title("About")
@@ -2335,13 +2586,19 @@ class App:
             row=0, column=text_col, sticky="w"
         )
         ttk.Label(frame, text="Pierpa86").grid(row=1, column=text_col, sticky="w")
-        ttk.Label(frame, text="Version 1.0").grid(row=2, column=text_col, sticky="w")
-        ttk.Label(frame, text="30/12/2025").grid(row=3, column=text_col, sticky="w")
+        ttk.Label(frame, text="Version 1.1").grid(row=2, column=text_col, sticky="w")
+        ttk.Label(frame, text="01/05/2026").grid(row=3, column=text_col, sticky="w")
         center_toplevel(about, width=about_width, height=about_height)
 
 
 def main():
-    root = tk.Tk()
+    if TkinterDnD is not None:
+        try:
+            root = TkinterDnD.Tk()
+        except (RuntimeError, tk.TclError):
+            root = tk.Tk()
+    else:
+        root = tk.Tk()
     icon_path = resource_path("icon.ico")
     if os.path.isfile(icon_path):
         try:
