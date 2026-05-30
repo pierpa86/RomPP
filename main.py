@@ -465,27 +465,38 @@ def split_ff_padded_chunks(data, chunk_size):
 def split_c_rom_banks(data, part_size, max_banks=4):
     if part_size <= 0:
         raise ValueError("Part size must be greater than zero.")
+    if max_banks <= 0:
+        raise ValueError("Maximum bank count must be greater than zero.")
 
-    expected_size = part_size * max_banks
+    max_size = part_size * max_banks
     padded_bank_bytes = 0
     trailing_padding_size = 0
-    if len(data) > expected_size:
-        trailing = data[expected_size:]
+    if len(data) > max_size:
+        trailing = data[max_size:]
         if not is_blank_padding(trailing):
             raise ValueError(
-                f"Loaded ROM is larger than {expected_size} bytes and the extra data "
+                f"Loaded ROM is larger than {max_size} bytes and the extra data "
                 "is not blank padding (FF)."
             )
         trailing_padding_size = len(trailing)
-        data = data[:expected_size]
+        data = data[:max_size]
 
     if part_size != C_ROM_EIGHT_MB_SIZE:
-        if len(data) < expected_size:
+        full_banks, remainder_size = divmod(len(data), part_size)
+        if full_banks == 0:
             raise ValueError(
-                f"Selected split size requires a {expected_size} byte file, "
-                f"but the loaded ROM is {len(data)} bytes."
+                f"Loaded ROM is smaller than the selected part size ({part_size} bytes)."
             )
-        banks = [data[index * part_size : (index + 1) * part_size] for index in range(max_banks)]
+        if remainder_size:
+            remainder = data[full_banks * part_size :]
+            if not is_blank_padding(remainder):
+                raise ValueError(
+                    "ROM size is not divisible by the selected part size and the trailing data "
+                    "is not blank padding (FF)."
+                )
+            trailing_padding_size += len(remainder)
+            data = data[: full_banks * part_size]
+        banks = [data[index * part_size : (index + 1) * part_size] for index in range(full_banks)]
         return banks, trailing_padding_size, padded_bank_bytes
 
     full_banks, remainder_size = divmod(len(data), part_size)
